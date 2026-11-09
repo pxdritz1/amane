@@ -2,6 +2,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+
+use toml_edit::DocumentMut;
 use std::time::SystemTime;
 
 use crate::{library, paths};
@@ -26,7 +28,18 @@ pub fn prepare() -> PathBuf {
     let main_path = main.display().to_string();
     let library_path = library_folder.display().to_string();
 
-    let manifest = manifest(&main_path, &library_path);
+    // Keep user-declared crates from the editor-facing manifest and from
+    // the previous cache manifest while refreshing Amane's machine-specific path.
+    let config_manifest = fs::read_to_string(paths::config().join("Cargo.toml"))
+        .unwrap_or_default();
+    let project_manifest = fs::read_to_string(project_folder.join("Cargo.toml"))
+        .unwrap_or_default();
+
+    let manifest = manifest(
+        &main_path,
+        &library_path,
+        &[&config_manifest, &project_manifest],
+    );
 
     write_if_changed(&project_folder.join("Cargo.toml"), manifest.as_bytes());
 
@@ -127,8 +140,8 @@ fn hash_folder(root: &Path, folder: &Path, hasher: &mut DefaultHasher) {
  * dependencies skip incremental, they only rebuild when amane updates.
  * the empty workspace keeps cargo from joining a workspace in a parent folder
  */
-fn manifest(main: &str, library: &str) -> String {
-    format!(
+fn manifest(main: &str, library: &str, existing: &[&str]) -> String {
+    let mut generated = format!(
         "[package]
 name = \"{BINARY}\"
 version = \"0.1.0\"
@@ -152,6 +165,33 @@ incremental = false
 [workspace]
 "
     )
+    .parse::<DocumentMut>()
+    .expect("failed to parse generated Cargo manifest");
+
+    let dependencies = generated
+        .get_mut("dependencies")
+        .and_then(|item| item.as_table_mut())
+        .expect("generated manifest has no dependencies table");
+
+    // Config is authoritative; the cache is a migration fallback for crates
+    // declared there by older Amane versions or before the config manifest existed.
+    for manifest in existing {
+        let Ok(parsed) = manifest.parse::<DocumentMut>() else {
+            continue;
+        };
+
+        let Some(additional) = parsed.get("dependencies").and_then(|item| item.as_table()) else {
+            continue;
+        };
+
+        for (name, dependency) in additional.iter() {
+            if name != "amane" && !dependencies.contains_key(name) {
+                dependencies.insert(name, dependency.clone());
+            }
+        }
+    }
+
+    generated.to_string()
 }
 
 fn write_if_changed(path: &Path, contents: &[u8]) {

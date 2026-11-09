@@ -20,7 +20,7 @@
 
 - **Your shell:** `~/.config/amane/src/`, or the folder you gave `amane new` or `amane target`. `main.rs` is the entry point. You can add more files next to it and load them with `mod`, like in any Rust program.
 - **Which folder:** `amane target` prints it. A folder other than the default is saved in `~/.local/state/amane/config-path`, per machine, so it stays out of your dotfiles. Run `amane target` again on each new machine.
-- **Editor support:** `Cargo.toml` next to your `src/`. `amane new` writes it and every build refreshes it, so rust-analyzer finds Amane and completes its types in any editor. Don't edit it. It holds paths for this machine only, so if you keep your shell in git, ignore `Cargo.toml`, `Cargo.lock` and `target/`.
+- **Editor support:** `Cargo.toml` next to your `src/`. `amane new` writes it and every build refreshes its machine-specific paths. Amane manages its own library dependency and preserves additional entries in `[dependencies]`, so rust-analyzer and Cargo see the same crates. If you keep your shell in git, ignore `Cargo.toml`, `Cargo.lock` and `target/`.
 - **Build files:** `~/.cache/amane/`.
   - `library/` holds the copy of Amane unpacked from the command.
   - `project/` holds the Cargo project generated around your `main.rs`.
@@ -75,7 +75,18 @@ Amane is always optimized, because unoptimized drawing is too slow for smooth an
 
 ## Dependencies
 
-Your shell's `Cargo.toml` is generated for you on every build, and it only depends on `amane`. That means you can't add other crates to your shell yet.
+Your shell's `Cargo.toml` is refreshed on every build. Amane manages the package, binary path, build profiles, and its own library dependency; additional direct dependencies in `[dependencies]` are preserved.
+
+To use another crate, add it under the existing `[dependencies]` section in the `Cargo.toml` next to your shell's `src/` folder. For example:
+
+```toml
+[dependencies]
+amane = { path = "/home/you/.cache/amane/library" }
+png = "0.18.1"
+zbus = { version = "5.19.0", features = ["blocking-api"] }
+```
+
+Keep the `amane` entry that Amane generated; add only the crates your shell needs. The path is specific to your machine, so continue ignoring this `Cargo.toml` when sharing your shell configuration.
 
 Most of what a shell needs is in the library already:
 

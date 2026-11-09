@@ -6,6 +6,7 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::thread;
 
@@ -20,6 +21,9 @@ use crate::changes;
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
 const JPEG_SIGNATURE: [u8; 3] = [0xFF, 0xD8, 0xFF];
+
+// Keep decoding off the UI thread without creating one thread per image.
+const IMAGE_DECODERS: usize = 2;
 
 // rgba pixels with plain, not premultiplied, alpha
 pub struct Bitmap {
@@ -62,6 +66,37 @@ type Key = (PathBuf, Option<(u32, u32)>, u32);
 static LOADED: LazyLock<Mutex<HashMap<Key, Option<Arc<Bitmap>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/*
+ * A shared queue feeds a fixed number of workers. The receiver lock is held
+ * only while waiting for a job; image decoding happens outside that lock.
+ */
+static DECODE_QUEUE: LazyLock<Sender<Key>> = LazyLock::new(|| {
+    let (sender, receiver) = mpsc::channel::<Key>();
+    let receiver = Arc::new(Mutex::new(receiver));
+
+    for index in 0..IMAGE_DECODERS {
+        let receiver = Arc::clone(&receiver);
+
+        thread::Builder::new()
+            .name(format!("amane-image-decoder-{index}"))
+            .spawn(move || loop {
+                let job = receiver
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .recv();
+
+                let Ok(key) = job else {
+                    break;
+                };
+
+                decode(key);
+            })
+            .expect("failed to start image decoder");
+    }
+
+    sender
+});
+
 // the widest and tallest monitors seen so far, in real pixels, 0 before the first
 static LARGEST_SCREEN: Mutex<(u32, u32)> = Mutex::new((0, 0));
 
@@ -84,8 +119,11 @@ pub fn load(path: &Path, cover: Option<(u32, u32)>, blur: u32) -> Option<Arc<Bit
     }
 
     loaded.insert(key.clone(), None);
+    drop(loaded);
 
-    thread::spawn(move || decode(key));
+    DECODE_QUEUE
+        .send(key)
+        .expect("image decoder queue stopped unexpectedly");
 
     changes::note_read(TypeId::of::<Decoded>());
 
