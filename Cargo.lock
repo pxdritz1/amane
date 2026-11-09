@@ -40,6 +40,7 @@ name = "amane-cli"
 version = "0.1.2"
 dependencies = [
  "amane",
+ "toml_edit",
 ]
 
 [[package]]

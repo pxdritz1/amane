@@ -3,8 +3,9 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-use toml_edit::DocumentMut;
 use std::time::SystemTime;
+
+use toml_edit::DocumentMut;
 
 use crate::{library, paths};
 
@@ -200,4 +201,63 @@ fn write_if_changed(path: &Path, contents: &[u8]) {
     }
 
     fs::write(path, contents).expect("failed to write project file");
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::manifest;
+
+    #[test]
+    fn preserves_additional_dependencies_and_refreshes_amane_path() {
+        let config = "[dependencies]\namane = { path = '/old/library' }\nzbus = { version = '5.19.0', features = ['blocking-api'] }\n";
+        let project = "[dependencies]\namane = { path = '/old/library' }\nzbus = '5.18.0'\npng = '0.18.1'\n";
+
+        let generated = manifest(
+            "/config/src/main.rs",
+            "/cache/library",
+            &[config, project],
+        );
+        let parsed = generated.parse::<DocumentMut>().unwrap();
+        let dependencies = parsed["dependencies"].as_table().unwrap();
+
+        assert_eq!(
+            dependencies["amane"]["path"].as_str(),
+            Some("/cache/library")
+        );
+        assert_eq!(
+            dependencies["zbus"]["version"].as_str(),
+            Some("5.19.0")
+        );
+        assert_eq!(
+            dependencies["zbus"]["features"]
+                .as_array()
+                .unwrap()
+                .get(0)
+                .unwrap()
+                .as_str(),
+            Some("blocking-api")
+        );
+        assert_eq!(dependencies["png"].as_str(), Some("0.18.1"));
+    }
+
+    #[test]
+    fn preserves_multiline_and_nested_dependency_tables_only() {
+        let config = "[package]\nname = 'shell'\n\n[dependencies]\namane = { path = '/old/library' }\nserde = {\n    version = '1',\n    features = ['derive'],\n}\n\n[dependencies.custom]\n git = 'https://example.invalid/custom'\n\n[profile.dev]\nopt-level = 1\n";
+
+        let generated = manifest("main.rs", "library", &[config]);
+        let parsed = generated.parse::<DocumentMut>().unwrap();
+        let dependencies = parsed["dependencies"].as_table().unwrap();
+
+        assert_eq!(
+            dependencies["serde"]["version"].as_str(),
+            Some("1")
+        );
+        assert_eq!(
+            dependencies["custom"]["git"].as_str(),
+            Some("https://example.invalid/custom")
+        );
+        assert!(parsed["package"]["name"].as_str().unwrap() == "amane-shell");
+        assert_eq!(parsed["profile"]["dev"]["opt-level"].as_integer(), None);
+    }
 }
