@@ -207,6 +207,7 @@ fn write_if_changed(path: &Path, contents: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::manifest;
+    use toml_edit::DocumentMut;
 
     #[test]
     fn preserves_additional_dependencies_and_refreshes_amane_path() {
